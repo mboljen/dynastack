@@ -1,0 +1,876 @@
+#!/usr/bin/env perl
+#
+# Created:         Mo 2019-08-26 11:15:34 CEST
+# Last Modified:   Thu 2021-10-14 17:13:27 CEST
+#
+# dynastack:
+#   Drag LS-DYNA shell layer to multi-layered pack of stacked parts
+
+use strict;
+use warnings;
+
+use Data::Dumper;
+use Getopt::Long;
+use List::Util qw(min max);
+use Math::Trig ':pi';
+use Math::Vector::Real;
+use Pod::Usage;
+use POSIX qw(log10 ceil);
+use Regexp::Common qw(number);
+use Text::Trim;
+
+use CAE::DYNA::Keyfile;
+
+# Disable buffering on STDOUT
+$|++;
+
+my $out;
+my $debug = 0;
+my $yes   = 0;
+my $man   = 0;
+my $help  = 0;
+
+my @stack;
+my $offset  = 0;
+my $renum   = 0;
+my $bknum   = 0;
+my $flip    = 0;
+my $edgetol = 0.02;
+my $merge   = 0;
+my $invnum  = 0;
+my $n0      = 0;
+my $e0      = 0;
+my $p0      = 0;
+my $vid     = 0;
+my $pid     = 0;
+
+GetOptions(
+    "stack=s"   => \@stack,    # --stack=<thk>:<nsub>:<type>[,[...]]
+    "flip!"     => \$flip,     # --flip
+    "offset=f"  => \$offset,   # --offset=<num>
+    "renum!"    => \$renum,    # --renum
+    "bknum!"    => \$bknum,    # --bknum
+    "edgetol=f" => \$edgetol,  # --edgetol=<num>
+    "merge!"    => \$merge,    # --merge
+    "invnum!"   => \$invnum,   # --invnum
+    "n0=i"      => \$n0,       # --n0=<num>
+    "e0=i"      => \$e0,       # --e0=<num>
+    "p0=i"      => \$p0,       # --p0=<num>
+    "vid=i"     => \$vid,      # --vid=<num>
+    "pid=i"     => \$pid,      # --pid=<num>
+    "out=s"     => \$out,      # --out=<filename>
+    "yes"       => \$yes,      # --yes
+    "debug!"    => \$debug,    # --debug
+    "man"       => \$man,      # --man
+    "help|?"    => \$help,     # --help
+) or pod2usage();
+
+
+pod2usage(1) if $help;
+pod2usage(-exitval => 0, -verbose => 2) if $man;
+
+# Show help unless one argument defined
+pod2usage(2) unless scalar @ARGV == 1;
+
+
+@stack = split(/,/, join(',', @stack));
+
+if (scalar @stack == 1 and -f $stack[0])
+{
+    #
+    my $filename = shift @stack;
+    #
+    die "Output filename mismatch stack config file"
+        if defined $out and $out eq $filename;
+    #
+    open(my $IN, "<", $filename) or die "Cannot open file handle: $!";
+    #
+    while (<$IN>)
+    {
+        chomp;
+        next if /^\$/;
+        my ($thk,$nsub,$type) = unpack('A10' x 3, $_);
+        #
+        $thk  = 0  unless defined $thk  or $thk  eq '';
+        $nsub = 0  unless defined $nsub or $nsub eq '';
+        $type = '' unless defined $type or $type eq '';
+        #
+        push @stack, trim($thk) . ':' . trim($nsub) . ':' . trim($type);
+    }
+    #
+    close($IN) or die "Cannot close file handle: $!";
+}
+
+
+my %stack;
+while (@stack)
+{
+    my $num = 1 + keys %stack;
+    #
+    my $this = shift @stack;
+    #
+    my ($thk,$nsub,$type) = split(/:/, $this);
+    #
+    die "Thickness invalid" if not defined $thk or
+            $thk !~ m/^$RE{num}{real}$/ or $thk <= 0;
+    die "Invalid number of sublayers" if not defined $nsub or
+            $nsub !~ m/^$RE{num}{int}$/ or $nsub <= 0;
+    die "Invalid element type" if not defined $type or
+            $type !~ m/^(?:shell|solid)$/i;
+    #
+    $stack{$num} = { nsub => $nsub, thk  => $thk, type => $type, };
+}
+
+die "No stack defined" unless keys %stack;
+
+
+
+# Check parameter: configuration file
+my $keyfile = shift @ARGV;
+die "LS-DYNA keyfile not found: $!" unless -f $keyfile;
+
+# Copy STDOUT to another filehandle
+open (my $STDOLD, '>&', \*STDOUT);
+
+# Redirect STDOUT to output filename if defined
+if (defined $out)
+{
+    die "Output keyfile already exists" if -f $out and not $yes;
+    open (STDOUT, '>', $out) or die "Cannot redirect STDOUT to $out: $!";
+}
+
+
+my $key = CAE::DYNA::Keyfile->new({ filepath => $keyfile });
+
+$key->load;
+warn "## KEYFILE (loaded)\n", Dumper($key) if $debug;
+
+
+#$key->filter();
+#warn "## KEYFILE (filtered)\n", Dumper($key) if $debug;
+
+
+$key->renumber() if $renum;
+warn "## KEYFILE (renumbered)\n", Dumper($key) if $debug;
+
+
+
+
+my (%assocelems,%normvec,%dirvec,@edge);
+
+# Determine element normals and register associated nodes
+for my $elem ($key->fetch({ keyword => '*ELEMENT_SHELL' }))
+{
+    # Get node ovjects
+    my $n1 = $key->fetch({ label => 'NID', uid => $elem->n1 });
+    my $n2 = $key->fetch({ label => 'NID', uid => $elem->n2 });
+    my $n3 = $key->fetch({ label => 'NID', uid => $elem->n3 });
+    my $n4 = $key->fetch({ label => 'NID', uid => $elem->n4 });
+
+    # Fake quad for triangular elements
+    $n4 = $n3 if not defined $n4 or $n4->uid == 0 and $elem->type =~ m/^tria/i;
+
+    #   # Get diagonals
+    my $r31 = $n3->vector - $n1->vector;
+    my $r42 = $n4->vector - $n2->vector;
+
+    # Get normal vector
+    my $s3 = $r31 x $r42;
+
+    # Save normalized vector
+    $normvec{ $elem->uid } = $s3->versor;
+
+    # Save associated nodes
+    for my $key (qw/n1 n2 n3 n4 n5 n6 n7 n8/)
+    {
+        my $nid = $elem->$key;
+        push @{$assocelems{$nid}}, $elem->uid if defined $nid and $nid > 0;
+    }
+}
+
+warn "## ASSOCELEMS\n", Dumper(\%assocelems) if $debug;
+
+warn "## NORMVEC\n", Dumper(\%normvec) if $debug;
+
+
+# Determine nodal translation vectors from associated elements
+#for my $nid (sort { $a <=> $b } keys %{$key->{node}})
+for my $node ($key->fetch({ label => 'NID' }))
+{
+    #
+    my $dirvec = V(0,0,0);
+
+    #
+    my $nid = $node->uid;
+
+    #
+    unless (scalar @{$assocelems{$nid}})
+    {
+        warn "NID $nid not associated to any element\n";
+        next;
+    }
+
+    # Loop over associated elements and add normals
+    map { $dirvec += $normvec{$_} } @{$assocelems{$nid}};
+
+    # Normalize accumulated normal vectors
+    $dirvec{$nid} = $dirvec->versor;
+
+    # Flip vectors if required
+    $dirvec{$nid} *= -1 if $flip;
+}
+
+warn "## DIRVEC\n", Dumper(\%dirvec) if $debug;
+
+#
+for my $node ($key->fetch({ label => 'NID' }))
+#for my $nid (sort { $a <=> $b } keys %{$key->{node}})
+{
+
+    my $nid = $node->uid;
+
+    # Define plane by normal vector and node
+    my $p = $node->vector;
+    my $q = $p * $dirvec{$nid};
+
+    #
+    my $angle = 0;
+
+    #
+    for my $eid (@{$assocelems{$nid}})
+    {
+        #
+        my $elem = $key->fetch({ label => 'EID', uid => $eid });
+
+        #
+        my %nb;
+
+        if ($elem->type =~ m/^tria3$/i)
+        {
+            #
+            %nb = ( 1 => { 'pre' => 3, 'post' => 2 },
+                    2 => { 'pre' => 1, 'post' => 3 },
+                    3 => { 'pre' => 2, 'post' => 1 } );
+        }
+        elsif ($elem->type =~ m/^quad4$/i)
+        {
+            %nb = ( 1 => { 'pre' => 4, 'post' => 2 },
+                    2 => { 'pre' => 1, 'post' => 3 },
+                    3 => { 'pre' => 2, 'post' => 4 },
+                    4 => { 'pre' => 3, 'post' => 1 } );
+        }
+        elsif ($elem->type =~ m/^tria6$/i)
+        {
+            %nb = ( 1 => { 'pre' => 6, 'post' => 4 },
+                    2 => { 'pre' => 4, 'post' => 5 },
+                    3 => { 'pre' => 5, 'post' => 6 },
+                    4 => { 'pre' => 1, 'post' => 2 },
+                    5 => { 'pre' => 2, 'post' => 3 },
+                    6 => { 'pre' => 3, 'post' => 1 } );
+        }
+        elsif ($elem->type =~ m/^quad8$/i)
+        {
+            %nb = ( 1 => { 'pre' => 8, 'post' => 5 },
+                    2 => { 'pre' => 5, 'post' => 6 },
+                    3 => { 'pre' => 6, 'post' => 7 },
+                    4 => { 'pre' => 7, 'post' => 8 },
+                    5 => { 'pre' => 1, 'post' => 2 },
+                    6 => { 'pre' => 2, 'post' => 3 },
+                    7 => { 'pre' => 3, 'post' => 4 },
+                    8 => { 'pre' => 4, 'post' => 5 } );
+        }
+        #
+        my ($i,$match) = (0,0);
+        while ( ++$i <= 8 )
+        {
+            if ($elem->{ 'n' . $i } == $nid)
+            {
+                $match = 1;
+                last;
+            }
+        }
+        die "Cannot locate node $nid in element $eid, internal error"
+            unless $match;
+
+        # Determine identifier of neighbouring nodes
+        my $nid1 = $elem->{ 'n' . $nb{$i}{pre} };
+        my $nid2 = $elem->{ 'n' . $nb{$i}{post} };
+
+        # Determine position vectors of adjacent nodes
+        my $p1 = $key->fetch({ label => 'NID', uid => $nid1 })->vector;
+        my $p2 = $key->fetch({ label => 'NID', uid => $nid2 })->vector;
+
+        # Determine distance of neighbouring nodes from normal plane
+        my $d1 = $p1 * $dirvec{$nid} - $q;
+        my $d2 = $p2 * $dirvec{$nid} - $q;
+
+        # Project neighbouring nodes to normal plane
+        $p1 -= $d1 * $dirvec{$nid};
+        $p2 -= $d2 * $dirvec{$nid};
+
+        # Determine direction vectors from node to projection of adjacent nodes
+        my $vec1 = $p1 - $p;
+        my $vec2 = $p2 - $p;
+
+        # Determine angle between vectors and accumulate total angle
+        $angle += atan2($vec1,$vec2);
+    }
+
+    # Add boundary node to edge node list
+    push @edge, $nid
+        unless abs( $angle - 2 * pi ) < $edgetol * 2 * pi;
+}
+
+warn "## EDGE\n", Dumper(\@edge) if $debug;
+
+
+# Determine nodes and elements range
+my %stat =
+(
+    'nid_min' => min( map { $_->uid } $key->fetch({ label => 'NID' }) ),
+    'nid_max' => max( map { $_->uid } $key->fetch({ label => 'NID' }) ),
+    'eid_min' => min( map { $_->uid } $key->fetch({ label => 'EID' }) ),
+    'eid_max' => max( map { $_->uid } $key->fetch({ label => 'EID' }) ),
+);
+
+$stat{nid_range} = $stat{nid_max} - $stat{nid_min} + 1;
+$stat{eid_range} = $stat{eid_max} - $stat{eid_min} + 1;
+
+if ($bknum)
+{
+    $stat{nid_block} = 10**ceil(log10($stat{nid_range}));
+    $stat{eid_block} = 10**ceil(log10($stat{eid_range}));
+}
+else
+{
+    $stat{nid_block} = $stat{nid_range};
+    $stat{eid_block} = $stat{eid_range};
+}
+
+$stat{thk_total} = 0;    # Total thickness
+$stat{nlay_max}  = 0;    # Number of nodal sublayers in layer
+
+for my $id (sort { $a <=> $b } keys %stack)
+{
+    #
+    $stat{nlay_max} += $stack{$id}{nsub};
+    $stat{nlay_max} += 1 if $stack{$id}{type} =~ m/^solid$/i;
+    #
+    $stat{thk_total} += $stack{$id}{thk};
+}
+
+$stat{pid_block} = 10**ceil(log10($stat{nlay_max}));
+
+
+warn "## STAT\n", Dumper(\%stat) if $debug;
+
+
+my @lkeys = sort { $a <=> $b } keys %stack;
+@lkeys = reverse @lkeys if $invnum;
+
+my $nlayacc = 0;
+for my $id (@lkeys)
+{
+    $stack{$id}{id} = 1 + $p0 + $stat{pid_block} * $nlayacc;
+    $stack{$id}{n1} =     $n0 + $stat{nid_block} * $nlayacc;
+    $stack{$id}{e1} =     $e0 + $stat{eid_block} * $nlayacc;
+    $nlayacc += $stack{$id}{nsub};
+    $nlayacc += 1 if $stack{$id}{type} =~ m/^solid$/i;
+}
+
+
+
+# Output data
+my $newkey = CAE::DYNA::Keyfile->new();
+
+sub convert_nid
+{
+    my ($n1,$id,$nid) = @_;
+    return ( $n1 + ( $id - 1 ) * $stat{nid_block} + $nid );
+}
+
+sub convert_eid
+{
+    my ($e1,$id,$eid) = @_;
+    return ( $e1 + ( $id - 1 ) * $stat{eid_block} + $eid );
+}
+
+
+my $thkoff = $offset;
+
+
+# Loop over layers in stack
+for my $id (sort { $a <=> $b } keys %stack)
+{
+    #
+    my $lref = $stack{$id};
+
+    #
+    my $pid_new = $stack{$id}{id};
+
+    #
+    my $set_node_edge_new = CAE::DYNA::Keyword::Set_Node->new({
+            sid => $pid_new,
+    });
+
+    # Create nodal distribution
+    for my $subid (1 .. $lref->{nsub})
+    {
+        #
+        my $subthk = $lref->{thk} / $lref->{nsub};
+
+        # Determine distance of mid of sublayer from origin layer
+        my $dist_mid = ( $subid - 0.5 ) * $subthk;
+
+        #
+        my @off = ( 0 );
+        @off = ( -0.5, 0.5 ) if $lref->{type} =~ m/^solid$/i;
+
+        my @subedge = ();
+
+        # Create nodes
+        foreach my $i  (0 .. $#off)
+        {
+            # Do not recreate first layer of solid nodes for subsequent sublayers
+            next if $i == 0 and $subid > 1 and $lref->{type} =~ m/^solid$/i;
+
+            # Nodal distance from master node
+            my $dist_node = $thkoff;
+
+            if ($invnum)
+            {
+                $dist_node += $lref->{thk};
+                $dist_node -= $dist_mid + $off[$i] * $subthk;
+            }
+            else
+            {
+                $dist_node += $dist_mid + $off[$i] * $subthk;
+            }
+
+            #
+            #foreach my $node (sort { $a <=> $b } keys %{$key->{node}})
+            foreach my $node ($key->fetch({ label => 'NID' }))
+            {
+                my $nid = $node->uid;
+                #
+                #my $posvec = $key->nodevec($nid); #{nodes}{$nid}{coordvec};
+                my $posvec = $node->vector;
+                my $dirvec = $dirvec{$nid}; # key->{nodes}{$nid}{dirvec};
+
+                #
+                my $nodevec = $posvec + $dist_node * $dirvec;
+
+                #
+                my $nlayid = $subid + $i;
+
+                # Determine destination node ID
+                my $nid_new = $lref->{n1}
+                            + ($nlayid-1) * $stat{nid_block} + $nid;
+
+                # Add new node to nodeset 'edge'
+                $set_node_edge_new->nid->push($nid_new)
+                    if grep $_ == $nid, @edge;
+
+                # Save position vector to new node
+                my $node_new = CAE::DYNA::Keyword::Node->new({
+                        nid => $nid_new,
+                        x   => $nodevec->[0],
+                        y   => $nodevec->[1],
+                        z   => $nodevec->[2],
+                });
+
+                # Add new node to input deck
+                $newkey->add($node_new);
+            }
+        }
+    }
+
+    # add node set (only if edge nodes detected)
+    $newkey->add($set_node_edge_new);
+
+    # Create elements
+    for my $subid (1 .. $lref->{nsub}) {
+
+        my %set_segment = ( sid => $pid_new + $subid,
+                            item => [] );
+
+        my %set_segment_solid_top = ( sid => $pid_new + $subid + 1, item => [] )
+            if $subid == $lref->{nsub} and $lref->{type} =~ /^solid$/i;
+
+        # Create elements
+        #foreach my $eid (sort { $a <=> $b } keys %{$key->{element_shell}})
+        foreach my $elem ($key->fetch({ label => 'EID' }))
+        {
+            my $eid = $elem->uid;
+            #
+            my $eid_new = convert_eid($lref->{e1}, $subid, $eid);
+
+
+            my $n1 = $elem->n1;
+            my $n2 = $elem->n2;
+            my $n3 = $elem->n3;
+
+            my $n1_new = convert_nid($lref->{n1}, $subid, $n1);
+            my $n2_new = convert_nid($lref->{n1}, $subid, $n2);
+            my $n3_new = convert_nid($lref->{n1}, $subid, $n3);
+
+            #if ($key->{element_shell}{$eid}{type} eq 'tria3')
+            if ($elem->type eq 'tria3')
+            {
+                #
+                if ($lref->{type} =~ m/^shell$/i)
+                {
+                    # create tria3 element
+                    my $elem_new = CAE::DYNA::Keyword::Element_Shell->new({
+                        eid => $eid_new,
+                        pid => $pid_new,
+                        n1  => 0,
+                        n2  => 0,
+                        n3  => 0,
+                    });
+                    #
+                    $elem_new->n1($n1_new);
+                    $elem_new->n2($n2_new);
+                    $elem_new->n3($n3_new);
+                    #
+                    $newkey->add($elem_new);
+                    #
+                    push @{$set_segment{item}}, {
+                        'n1' => $n1_new, 'n2' => $n2_new,
+                        'n3' => $n3_new, 'n4' => $n3_new, };
+                }
+                elsif ($lref->{type} =~ m/^solid$/i)
+                {
+                    #
+                    # create hexa6
+                    #
+                    my $n4_new = convert_nid($lref->{n1}, $subid + 1, $n1);
+                    my $n5_new = convert_nid($lref->{n1}, $subid + 1, $n2);
+                    my $n6_new = convert_nid($lref->{n1}, $subid + 1, $n3);
+                    #
+                    my $elem_new = CAE::DYNA::Keyword::Element_Solid->new({
+                        eid => $eid_new,
+                        pid => $pid_new,
+                        n1  => 0,
+                        n2  => 0,
+                        n3  => 0,
+                        n4  => 0,
+                        n5  => 0,
+                        n6  => 0,
+                        n7  => 0,
+                        n8  => 0,
+                    });
+
+                    #
+                    #
+                    if ($invnum)
+                    {
+                        #
+                        $elem_new->n1($n5_new);
+                        $elem_new->n2($n4_new);
+                        $elem_new->n3($n1_new);
+                        $elem_new->n4($n2_new);
+                        $elem_new->n5($n6_new);
+                        $elem_new->n6($n6_new);
+                        $elem_new->n7($n3_new);
+                        $elem_new->n8($n3_new);
+                        #
+                        #$data{n1} = $n5_new;
+                        #$data{n2} = $n4_new;
+                        #$data{n3} = $n1_new;
+                        #$data{n4} = $n2_new;
+                        #$data{n5} = $n6_new;
+                        #$data{n6} = $n6_new;
+                        #$data{n7} = $n3_new;
+                        #$data{n8} = $n3_new;
+                    }
+                    else
+                    {
+                        #
+                        $elem_new->n1($n1_new);
+                        $elem_new->n2($n2_new);
+                        $elem_new->n3($n5_new);
+                        $elem_new->n4($n4_new);
+                        $elem_new->n5($n3_new);
+                        $elem_new->n6($n3_new);
+                        $elem_new->n7($n6_new);
+                        $elem_new->n8($n6_new);
+                        #
+                        #$data{n1} = $n1_new;
+                        #$data{n2} = $n2_new;
+                        #$data{n3} = $n5_new;
+                        #$data{n4} = $n4_new;
+                        #$data{n5} = $n3_new;
+                        #$data{n6} = $n3_new;
+                        #$data{n7} = $n6_new;
+                        #$data{n8} = $n6_new;
+                    }
+                    #
+                    $newkey->add($elem_new);
+                    #$newkey->add_element_solid(\%data);
+                    #
+                    push @{$set_segment{item}}, {
+                        'n1' => $n1_new, 'n2' => $n2_new,
+                        'n3' => $n3_new, 'n4' => $n3_new, };
+                    #
+                    push @{$set_segment_solid_top{item}}, {
+                        'n1' => $n4_new, 'n2' => $n5_new,
+                        'n3' => $n6_new, 'n4' => $n6_new, }
+                            if $subid == $lref->{nsub};
+                }
+            }
+            elsif ($elem->type eq 'quad4') {
+                #
+                #my $n4 = $key->{element_shell}{$eid}{n4};
+                my $n4 = $elem->n4;
+                #
+                my $n4_new = convert_nid($lref->{n1}, $subid, $n4);
+                #
+                if ($lref->{type} =~ m/^shell$/i) {
+                    #
+                    my $elem_new = CAE::DYNA::Keyword::Element_Shell->new({
+                        eid => $eid_new,
+                        pid => $pid_new,
+                        n1  => 0,
+                        n2  => 0,
+                        n3  => 0,
+                        n4  => 0,
+                    });
+                    #
+                    # create quad4
+                    #
+                    $elem_new->n1($n1_new);
+                    $elem_new->n2($n2_new);
+                    $elem_new->n3($n3_new);
+                    $elem_new->n4($n4_new);
+                    #
+                    #$newkey->add_element_shell(\%data);
+                    $newkey->add($elem_new);
+                    #
+                    push @{$set_segment{item}}, {
+                        'n1' => $n1_new, 'n2' => $n2_new,
+                        'n3' => $n3_new, 'n4' => $n4_new,
+                    };
+                }
+                elsif ($lref->{type} =~ m/^solid$/i)
+                {
+                    #
+                    # create hexa8
+                    #
+                    my $n5_new = convert_nid($lref->{n1}, $subid + 1, $n1);
+                    my $n6_new = convert_nid($lref->{n1}, $subid + 1, $n2);
+                    my $n7_new = convert_nid($lref->{n1}, $subid + 1, $n3);
+                    my $n8_new = convert_nid($lref->{n1}, $subid + 1, $n4);
+                    #
+                    my $elem_new = CAE::DYNA::Keyword::Element_Solid->new({
+                        eid => $eid_new,
+                        pid => $pid_new,
+                        n1  => 0,
+                        n2  => 0,
+                        n3  => 0,
+                        n4  => 0,
+                        n5  => 0,
+                        n6  => 0,
+                        n7  => 0,
+                        n8  => 0,
+                    });
+
+                    #
+                    if ($invnum) {
+                        #
+                        $elem_new->n1($n5_new);
+                        $elem_new->n2($n6_new);
+                        $elem_new->n3($n7_new);
+                        $elem_new->n4($n8_new);
+                        $elem_new->n5($n1_new);
+                        $elem_new->n6($n2_new);
+                        $elem_new->n7($n3_new);
+                        $elem_new->n8($n4_new);
+                        #
+                        #$data{n1} = $n5_new;
+                        #$data{n2} = $n6_new;
+                        #$data{n3} = $n7_new;
+                        #$data{n4} = $n8_new;
+                        #$data{n5} = $n1_new;
+                        #$data{n6} = $n2_new;
+                        #$data{n7} = $n3_new;
+                        #$data{n8} = $n4_new;
+                    }
+                    else {
+                        #
+                        $elem_new->n1($n1_new);
+                        $elem_new->n2($n2_new);
+                        $elem_new->n3($n3_new);
+                        $elem_new->n4($n4_new);
+                        $elem_new->n5($n5_new);
+                        $elem_new->n6($n6_new);
+                        $elem_new->n7($n7_new);
+                        $elem_new->n8($n8_new);
+                        #
+                        #$data{n1} = $n1_new;
+                        #$data{n2} = $n2_new;
+                        #$data{n3} = $n3_new;
+                        #$data{n4} = $n4_new;
+                        #$data{n5} = $n5_new;
+                        #$data{n6} = $n6_new;
+                        #$data{n7} = $n7_new;
+                        #$data{n8} = $n8_new;
+                    }
+                    #
+                    $newkey->add($elem_new);
+                    #$newkey->add_element_solid(\%data);
+                    #
+                    push @{$set_segment{item}}, {
+                        'n1' => $n1_new, 'n2' => $n2_new,
+                        'n3' => $n3_new, 'n4' => $n4_new,
+                    };
+                    #
+                    if ($subid == $lref->{nsub})
+                    {
+                        push @{$set_segment_solid_top{item}}, {
+                            'n1' => $n5_new, 'n2' => $n6_new,
+                            'n3' => $n7_new, 'n4' => $n8_new,
+                        };
+                    }
+                }
+            }
+            else {
+                #
+                die sprintf("Element type %s not implemented for 3D drag yet",
+                                $elem->type);
+            }
+        }
+
+        # Add first segment layer for solids (or any layer for shells)
+        #$newkey->add_set_segment(\%set_segment)
+        #    if $lref->{type} =~ /^shell$/i or $subid == 1;
+
+        # Add last segment layer for solids
+        #$newkey->add_set_segment(\%set_segment_solid_top)
+        #    if $lref->{type} =~ /^solid$/i and $subid == $lref->{nsub};
+    }
+
+    #
+    $thkoff += $lref->{thk};
+
+}
+
+
+print $newkey;
+
+
+# restore STDOUT
+open (STDOUT, '>&', $STDOLD) or die "Cannot restore STDOUT";
+
+__END__
+
+=head1 NAME
+
+dynastack - Drag LS-DYNA shell layer to multi-layered pack of stacked parts
+
+=head1 SYNOPSIS
+
+B<dynastack> [I<options>] I<keyfile>
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--stack>=I<string>
+
+Supply stacking sequence by comma-separated list of items following the
+syntax I<thk>:I<nsub>:I<type>, where I<thk> denotes the physical thickness of
+the layer, I<nsub> the number of shells or solids along the thickness direction, and I<type> the element topology, i.e. either C<shell> or C<solid>.
+
+=item B<--flip>
+
+Flips the normal vector of all elements of the source layer.  Care should be taken that all source element normals point to the same side of the layer.
+
+=item B<--offset>=I<distance>
+
+()
+
+=item B<--renum>
+
+(not implemented yet)
+
+=item B<--bknum>
+
+Enables block numbering.
+
+=item B<--edgetol>=I<num>
+
+()
+
+=item B<--merge>
+
+()
+
+=item B<--invnum>
+
+()
+
+=item B<--n0>=I<id>
+
+Offset to node ID (default: 0)
+
+=item B<--e0>=I<id>
+
+Offset to element ID (default: 0)
+
+=item B<--p0>=I<id>
+
+Offset to part ID (default: 0)
+
+=item B<--vid>=I<id>
+
+Drags shell elements along LS-DYNA keyfile vector.  Specify ID of vector
+that is defined in keyfile.  If no ID is given, each master shell element
+is dragged along its individual element normal.
+
+=item B<--pid>=I<id>
+
+=item B<--out>=I<filename>
+
+Redirects STDOUT to external file.
+
+=item B<--yes>
+
+Overwrites existing files without prompting.
+
+=item B<--debug>
+
+()
+
+=item B<--man>
+
+Prints the manual and exists.
+
+=item B<--man>
+
+Prints a brief help message and exists.
+
+=back
+
+
+=head1 DESCRIPTION
+
+This script drags an arbitrary LS-DYNA shell geometry along the shell normal direction to build a multi-layer pack of stacked components.
+
+=head1 HISTORY
+
+ 2019-03-19  Beta version
+
+=head1 AUTHOR
+
+ Matthias Boljen (L<matthias.boljen@emi.fraunhofer.de>)
+
+=head1 COPYRIGHT AND LICENSE
+
+ Copyright 2019 by Matthias Boljen
+
+This program is free software; you can redistribute it and/or modify it under the same terms as Perl itself. See perldoc perlartistic.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+=cut
