@@ -44,15 +44,19 @@ $ dynastack [--options] sourcekeyfile
 
 + `--stack` _value_
 
+  [enter text here]
+
 + `--flip`
 
   Flips normal vectors of the 2D hull geometry.
 
 + `--offset` _distance_
 
+  [enter text here]
+
 + `--renum`
 
-  (not implemented yet)
+  Enables renumbering (not implemented yet).
 
 + `--bknum`
 
@@ -64,17 +68,27 @@ $ dynastack [--options] sourcekeyfile
 
 + `--merge`
 
+  [enter text here]
+
 + `--invnum`
 
   [enter text here]
 
-+ `--n0` _id_
++ `--nid0` _id_
 
-+ `--e0` _id_
+  [enter text here]
 
-+ `--p0` _id_
++ `--eid0` _id_
+
+  [enter text here]
+
++ `--pid0` _id_
+
+  [enter text here]
 
 + `--vid` _id_
+
+  [enter text here]
 
 + `-o`, `--outfile` _value_
 
