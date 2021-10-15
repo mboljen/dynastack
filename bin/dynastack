@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 #
 # Created:         Mo 2019-08-26 11:15:34 CEST
-# Last Modified:   Thu 2021-10-14 17:13:27 CEST
+# Last Modified:   Fri 2021-10-15 13:15:26 CEST
 #
 # dynastack:
 #   Drag LS-DYNA shell layer to multi-layered pack of stacked parts
@@ -38,11 +38,10 @@ my $flip    = 0;
 my $edgetol = 0.02;
 my $merge   = 0;
 my $invnum  = 0;
-my $n0      = 0;
-my $e0      = 0;
-my $p0      = 0;
+my $nid0    = 0;
+my $eid0    = 0;
+my $pid0    = 0;
 my $vid     = 0;
-my $pid     = 0;
 
 GetOptions(
     "stack=s"   => \@stack,    # --stack=<thk>:<nsub>:<type>[,[...]]
@@ -53,11 +52,10 @@ GetOptions(
     "edgetol=f" => \$edgetol,  # --edgetol=<num>
     "merge!"    => \$merge,    # --merge
     "invnum!"   => \$invnum,   # --invnum
-    "n0=i"      => \$n0,       # --n0=<num>
-    "e0=i"      => \$e0,       # --e0=<num>
-    "p0=i"      => \$p0,       # --p0=<num>
+    "nid0=i"    => \$nid0,     # --nid0=<num>
+    "eid0=i"    => \$eid0,     # --eid0=<num>
+    "pid0=i"    => \$pid0,     # --pid0=<num>
     "vid=i"     => \$vid,      # --vid=<num>
-    "pid=i"     => \$pid,      # --pid=<num>
     "out=s"     => \$out,      # --out=<filename>
     "yes"       => \$yes,      # --yes
     "debug!"    => \$debug,    # --debug
@@ -371,9 +369,9 @@ my @lkeys = sort { $a <=> $b } keys %stack;
 my $nlayacc = 0;
 for my $id (@lkeys)
 {
-    $stack{$id}{id} = 1 + $p0 + $stat{pid_block} * $nlayacc;
-    $stack{$id}{n1} =     $n0 + $stat{nid_block} * $nlayacc;
-    $stack{$id}{e1} =     $e0 + $stat{eid_block} * $nlayacc;
+    $stack{$id}{id} = 1 + $pid0 + $stat{pid_block} * $nlayacc;
+    $stack{$id}{n1} =     $nid0 + $stat{nid_block} * $nlayacc;
+    $stack{$id}{e1} =     $eid0 + $stat{eid_block} * $nlayacc;
     $nlayacc += $stack{$id}{nsub};
     $nlayacc += 1 if $stack{$id}{type} =~ m/^solid$/i;
 }
@@ -788,11 +786,11 @@ Flips the normal vector of all elements of the source layer.  Care should be tak
 
 =item B<--offset>=I<distance>
 
-()
+[enter text here]
 
 =item B<--renum>
 
-(not implemented yet)
+Enables renumbering (not implemented yet).
 
 =item B<--bknum>
 
@@ -800,25 +798,25 @@ Enables block numbering.
 
 =item B<--edgetol>=I<num>
 
-()
+[enter text here]
 
 =item B<--merge>
 
-()
+[enter text here]
 
 =item B<--invnum>
 
-()
+[enter text here]
 
-=item B<--n0>=I<id>
+=item B<--nid0>=I<id>
 
 Offset to node ID (default: 0)
 
-=item B<--e0>=I<id>
+=item B<--eid0>=I<id>
 
 Offset to element ID (default: 0)
 
-=item B<--p0>=I<id>
+=item B<--pid0>=I<id>
 
 Offset to part ID (default: 0)
 
@@ -840,7 +838,7 @@ Overwrites existing files without prompting.
 
 =item B<--debug>
 
-()
+[enter text here]
 
 =item B<--man>
 
@@ -861,13 +859,9 @@ This script drags an arbitrary LS-DYNA shell geometry along the shell normal dir
 
  2019-03-19  Beta version
 
-=head1 AUTHOR
-
- Matthias Boljen (L<matthias.boljen@emi.fraunhofer.de>)
-
 =head1 COPYRIGHT AND LICENSE
 
- Copyright 2019 by Matthias Boljen
+ Copyright 2021 by Matthias Boljen
 
 This program is free software; you can redistribute it and/or modify it under the same terms as Perl itself. See perldoc perlartistic.
 

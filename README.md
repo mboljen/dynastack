@@ -39,15 +39,46 @@ $ dynastack [--options] sourcekeyfile
 ```
 
 
+
 ## Options
 
-+ `-o`, `--outfile` _value_
-
-  Specifies the name of the output file.  Output will be directed to `STDOUT` unless defined.
++ `--stack` _value_
 
 + `--flip`
 
   Flips normal vectors of the 2D hull geometry.
+
++ `--offset` _distance_
+
++ `--renum`
+
+  (not implemented yet)
+
++ `--bknum`
+
+  Enables block numbering.
+
++ `--edgetol` _num_
+
+  [enter text here]
+
++ `--merge`
+
++ `--invnum`
+
+  [enter text here]
+
++ `--n0` _id_
+
++ `--e0` _id_
+
++ `--p0` _id_
+
++ `--vid` _id_
+
++ `-o`, `--outfile` _value_
+
++ Specifies the name of the output file.  Output will be directed to `STDOUT` unless defined.
 
 + `-y`, `--yes`
 
