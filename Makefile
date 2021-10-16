@@ -17,19 +17,21 @@ DOC_DIR=$(PREFIX)/share/doc/$(PKG_NAME)
 MAN_DIR=share/man/man1
 MAN=$(MAN_DIR)/$(NAME).1.gz
 
-build: $(PKG) $(MAN)
+build: $(MAN) $(PKG)
 
-$(PKG): pkg
-	git archive --output=$(PKG) --prefix=$(PKG_NAME)/ HEAD
+all: $(MAN) $(PKG) $(SIG)
 
 pkg:
 	mkdir -p $(PKG_DIR)
 
-$(MAN): man
-	pod2man bin/$(NAME) | gzip -9 > $(MAN)
+$(PKG): pkg
+	git archive --output=$(PKG) --prefix=$(PKG_NAME)/ HEAD
 
 man:
 	mkdir -p $(MAN_DIR)
+
+$(MAN): man
+	pod2man bin/$(NAME) | gzip -9 > $(MAN)
 
 sign: $(SIG)
 
@@ -37,9 +39,7 @@ $(SIG): $(PKG)
 	gpg --sign --detach-sign --armor $(PKG)
 
 clean:
-	rm -f $(PKG) $(SIG)
-
-all: $(MAN) $(PKG) $(SIG)
+	rm -f $(MAN) $(PKG) $(SIG)
 
 test:
 
