@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 #
 # Created:         Mo 2019-08-26 11:15:34 CEST
-# Last Modified:   Fri 2021-10-15 13:15:26 CEST
+# Last Modified:   Tue 2021-10-19 15:43:46 CEST
 #
 # dynastack:
 #   Drag LS-DYNA shell layer to multi-layered pack of stacked parts
@@ -466,7 +466,7 @@ for my $id (sort { $a <=> $b } keys %stack)
                             + ($nlayid-1) * $stat{nid_block} + $nid;
 
                 # Add new node to nodeset 'edge'
-                $set_node_edge_new->nid->push($nid_new)
+                $set_node_edge_new->list->push($nid_new)
                     if grep $_ == $nid, @edge;
 
                 # Save position vector to new node
@@ -486,33 +486,40 @@ for my $id (sort { $a <=> $b } keys %stack)
     # add node set (only if edge nodes detected)
     $newkey->add($set_node_edge_new);
 
-    # Create elements
+    # create elements
     for my $subid (1 .. $lref->{nsub}) {
 
-        my %set_segment = ( sid => $pid_new + $subid,
-                            item => [] );
+        # create empty segment set
+        my $set_segment = CAE::DYNA::Keyword::Set_Segment->new({
+            sid => $pid_new + $subid,
+        });
 
-        my %set_segment_solid_top = ( sid => $pid_new + $subid + 1, item => [] )
-            if $subid == $lref->{nsub} and $lref->{type} =~ /^solid$/i;
+        #my %set_segment = ( sid => $pid_new + $subid, item => [] );
+
+        my $set_segment_solid_top = CAE::DYNA::Keyword::Set_Segment->new({
+            sid => $pid_new + $subid + 1,
+        }) if $subid == $lref->{nsub} and $lref->{type} =~ /^solid$/i;
+
+        #
+        # my %set_segment_solid_top = (
+        #   sid => $pid_new + $subid + 1, item => [] )
+        #    if $subid == $lref->{nsub} and $lref->{type} =~ /^solid$/i;
 
         # Create elements
-        #foreach my $eid (sort { $a <=> $b } keys %{$key->{element_shell}})
         foreach my $elem ($key->fetch({ label => 'EID' }))
         {
             my $eid = $elem->uid;
             #
             my $eid_new = convert_eid($lref->{e1}, $subid, $eid);
-
-
+            #
             my $n1 = $elem->n1;
             my $n2 = $elem->n2;
             my $n3 = $elem->n3;
-
+            #
             my $n1_new = convert_nid($lref->{n1}, $subid, $n1);
             my $n2_new = convert_nid($lref->{n1}, $subid, $n2);
             my $n3_new = convert_nid($lref->{n1}, $subid, $n3);
-
-            #if ($key->{element_shell}{$eid}{type} eq 'tria3')
+            #
             if ($elem->type eq 'tria3')
             {
                 #
@@ -533,19 +540,18 @@ for my $id (sort { $a <=> $b } keys %stack)
                     #
                     $newkey->add($elem_new);
                     #
-                    push @{$set_segment{item}}, {
-                        'n1' => $n1_new, 'n2' => $n2_new,
-                        'n3' => $n3_new, 'n4' => $n3_new, };
+                    $set_segment->list->push(
+                       CAE::DYNA::Keyword::Set_Segment::Item->new({
+                            n1 => $n1_new,
+                            n2 => $n2_new,
+                            n3 => $n3_new,
+                            n4 => $n3_new,
+                        })
+                    );
                 }
                 elsif ($lref->{type} =~ m/^solid$/i)
                 {
-                    #
-                    # create hexa6
-                    #
-                    my $n4_new = convert_nid($lref->{n1}, $subid + 1, $n1);
-                    my $n5_new = convert_nid($lref->{n1}, $subid + 1, $n2);
-                    my $n6_new = convert_nid($lref->{n1}, $subid + 1, $n3);
-                    #
+                    # create hex6 element
                     my $elem_new = CAE::DYNA::Keyword::Element_Solid->new({
                         eid => $eid_new,
                         pid => $pid_new,
@@ -558,8 +564,10 @@ for my $id (sort { $a <=> $b } keys %stack)
                         n7  => 0,
                         n8  => 0,
                     });
-
                     #
+                    my $n4_new = convert_nid($lref->{n1}, $subid + 1, $n1);
+                    my $n5_new = convert_nid($lref->{n1}, $subid + 1, $n2);
+                    my $n6_new = convert_nid($lref->{n1}, $subid + 1, $n3);
                     #
                     if ($invnum)
                     {
@@ -572,15 +580,6 @@ for my $id (sort { $a <=> $b } keys %stack)
                         $elem_new->n6($n6_new);
                         $elem_new->n7($n3_new);
                         $elem_new->n8($n3_new);
-                        #
-                        #$data{n1} = $n5_new;
-                        #$data{n2} = $n4_new;
-                        #$data{n3} = $n1_new;
-                        #$data{n4} = $n2_new;
-                        #$data{n5} = $n6_new;
-                        #$data{n6} = $n6_new;
-                        #$data{n7} = $n3_new;
-                        #$data{n8} = $n3_new;
                     }
                     else
                     {
@@ -593,39 +592,48 @@ for my $id (sort { $a <=> $b } keys %stack)
                         $elem_new->n6($n3_new);
                         $elem_new->n7($n6_new);
                         $elem_new->n8($n6_new);
-                        #
-                        #$data{n1} = $n1_new;
-                        #$data{n2} = $n2_new;
-                        #$data{n3} = $n5_new;
-                        #$data{n4} = $n4_new;
-                        #$data{n5} = $n3_new;
-                        #$data{n6} = $n3_new;
-                        #$data{n7} = $n6_new;
-                        #$data{n8} = $n6_new;
                     }
                     #
                     $newkey->add($elem_new);
-                    #$newkey->add_element_solid(\%data);
                     #
-                    push @{$set_segment{item}}, {
-                        'n1' => $n1_new, 'n2' => $n2_new,
-                        'n3' => $n3_new, 'n4' => $n3_new, };
+                    $set_segment->segments->push({
+                            n1 => $n1_new,
+                            n2 => $n2_new,
+                            n3 => $n3_new,
+                            n4 => $n3_new,
+                    });
                     #
-                    push @{$set_segment_solid_top{item}}, {
-                        'n1' => $n4_new, 'n2' => $n5_new,
-                        'n3' => $n6_new, 'n4' => $n6_new, }
-                            if $subid == $lref->{nsub};
+                    $set_segment->list->push(
+                       CAE::DYNA::Keyword::Set_Segment::Item->new({
+                            n1 => $n1_new,
+                            n2 => $n2_new,
+                            n3 => $n3_new,
+                            n4 => $n3_new,
+                        })
+                    );
+                    #
+                    if ($subid == $lref->{nsub})
+                    {
+                        $set_segment_solid_top->list->push(
+                            CAE::DYNA::Keyword::Set_Segment::Item->new({
+                                n1 => $n4_new,
+                                n2 => $n5_new,
+                                n3 => $n6_new,
+                                n4 => $n6_new,
+                            })
+                        );
+                    }
                 }
             }
             elsif ($elem->type eq 'quad4') {
                 #
-                #my $n4 = $key->{element_shell}{$eid}{n4};
                 my $n4 = $elem->n4;
                 #
                 my $n4_new = convert_nid($lref->{n1}, $subid, $n4);
                 #
-                if ($lref->{type} =~ m/^shell$/i) {
-                    #
+                if ($lref->{type} =~ m/^shell$/i)
+                {
+                    # create quad4 element
                     my $elem_new = CAE::DYNA::Keyword::Element_Shell->new({
                         eid => $eid_new,
                         pid => $pid_new,
@@ -635,31 +643,25 @@ for my $id (sort { $a <=> $b } keys %stack)
                         n4  => 0,
                     });
                     #
-                    # create quad4
-                    #
                     $elem_new->n1($n1_new);
                     $elem_new->n2($n2_new);
                     $elem_new->n3($n3_new);
                     $elem_new->n4($n4_new);
                     #
-                    #$newkey->add_element_shell(\%data);
                     $newkey->add($elem_new);
                     #
-                    push @{$set_segment{item}}, {
-                        'n1' => $n1_new, 'n2' => $n2_new,
-                        'n3' => $n3_new, 'n4' => $n4_new,
-                    };
+                    $set_segment->list->push(
+                        CAE::DYNA::Keyword::Set_Segment::Item->new({
+                            n1 => $n1_new,
+                            n2 => $n2_new,
+                            n3 => $n3_new,
+                            n4 => $n4_new,
+                        })
+                    );
                 }
                 elsif ($lref->{type} =~ m/^solid$/i)
                 {
-                    #
-                    # create hexa8
-                    #
-                    my $n5_new = convert_nid($lref->{n1}, $subid + 1, $n1);
-                    my $n6_new = convert_nid($lref->{n1}, $subid + 1, $n2);
-                    my $n7_new = convert_nid($lref->{n1}, $subid + 1, $n3);
-                    my $n8_new = convert_nid($lref->{n1}, $subid + 1, $n4);
-                    #
+                    # create hex8 element
                     my $elem_new = CAE::DYNA::Keyword::Element_Solid->new({
                         eid => $eid_new,
                         pid => $pid_new,
@@ -672,9 +674,14 @@ for my $id (sort { $a <=> $b } keys %stack)
                         n7  => 0,
                         n8  => 0,
                     });
-
                     #
-                    if ($invnum) {
+                    my $n5_new = convert_nid($lref->{n1}, $subid + 1, $n1);
+                    my $n6_new = convert_nid($lref->{n1}, $subid + 1, $n2);
+                    my $n7_new = convert_nid($lref->{n1}, $subid + 1, $n3);
+                    my $n8_new = convert_nid($lref->{n1}, $subid + 1, $n4);
+                     #
+                    if ($invnum)
+                    {
                         #
                         $elem_new->n1($n5_new);
                         $elem_new->n2($n6_new);
@@ -684,15 +691,6 @@ for my $id (sort { $a <=> $b } keys %stack)
                         $elem_new->n6($n2_new);
                         $elem_new->n7($n3_new);
                         $elem_new->n8($n4_new);
-                        #
-                        #$data{n1} = $n5_new;
-                        #$data{n2} = $n6_new;
-                        #$data{n3} = $n7_new;
-                        #$data{n4} = $n8_new;
-                        #$data{n5} = $n1_new;
-                        #$data{n6} = $n2_new;
-                        #$data{n7} = $n3_new;
-                        #$data{n8} = $n4_new;
                     }
                     else {
                         #
@@ -704,35 +702,35 @@ for my $id (sort { $a <=> $b } keys %stack)
                         $elem_new->n6($n6_new);
                         $elem_new->n7($n7_new);
                         $elem_new->n8($n8_new);
-                        #
-                        #$data{n1} = $n1_new;
-                        #$data{n2} = $n2_new;
-                        #$data{n3} = $n3_new;
-                        #$data{n4} = $n4_new;
-                        #$data{n5} = $n5_new;
-                        #$data{n6} = $n6_new;
-                        #$data{n7} = $n7_new;
-                        #$data{n8} = $n8_new;
                     }
                     #
                     $newkey->add($elem_new);
-                    #$newkey->add_element_solid(\%data);
                     #
-                    push @{$set_segment{item}}, {
-                        'n1' => $n1_new, 'n2' => $n2_new,
-                        'n3' => $n3_new, 'n4' => $n4_new,
-                    };
+                    $set_segment->list->push(
+                        CAE::DYNA::Keyword::Set_Segment::Item->new({
+                            n1 => $n1_new,
+                            n2 => $n2_new,
+                            n3 => $n3_new,
+                            n4 => $n4_new,
+                        })
+                    );
                     #
                     if ($subid == $lref->{nsub})
                     {
-                        push @{$set_segment_solid_top{item}}, {
-                            'n1' => $n5_new, 'n2' => $n6_new,
-                            'n3' => $n7_new, 'n4' => $n8_new,
-                        };
+                        #
+                        $set_segment_solid_top->list->push(
+                            CAE::DYNA::Keyword::Set_Segment::Item->new({
+                                n1 => $n5_new,
+                                n2 => $n6_new,
+                                n3 => $n7_new,
+                                n4 => $n8_new,
+                            })
+                        );
                     }
                 }
             }
-            else {
+            else
+            {
                 #
                 die sprintf("Element type %s not implemented for 3D drag yet",
                                 $elem->type);
@@ -740,12 +738,12 @@ for my $id (sort { $a <=> $b } keys %stack)
         }
 
         # Add first segment layer for solids (or any layer for shells)
-        #$newkey->add_set_segment(\%set_segment)
-        #    if $lref->{type} =~ /^shell$/i or $subid == 1;
+        $newkey->add($set_segment)
+            if $lref->{type} =~ /^shell$/i or $subid == 1;
 
         # Add last segment layer for solids
-        #$newkey->add_set_segment(\%set_segment_solid_top)
-        #    if $lref->{type} =~ /^solid$/i and $subid == $lref->{nsub};
+        $newkey->add($set_segment_solid_top)
+            if $lref->{type} =~ /^solid$/i and $subid == $lref->{nsub};
     }
 
     #
