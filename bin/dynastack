@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 #
 # Created:         Mo 2019-08-26 11:15:34 CEST
-# Last Modified:   Wed 2021-10-20 12:55:46 CEST
+# Last Modified:   Wed 2021-10-20 13:21:22 CEST
 #
 # dynastack:
 #   Drag LS-DYNA shell layer to multi-layered pack of stacked parts
@@ -32,7 +32,6 @@ my $help  = 0;
 
 my @stack;
 my $offset  = 0;
-my $renum   = 0;
 my $bknum   = 0;
 my $flip    = 0;
 my $edgetol = 0.02;
@@ -42,13 +41,14 @@ my $nid0    = 0;
 my $eid0    = 0;
 my $pid0    = 0;
 my $cid0    = 0;
+my $contact = 0;
+my $cnrb    = 0;
 my $vid     = 0;
 
 GetOptions(
     "stack=s"   => \@stack,    # --stack=<thk>:<nsub>:<type>[,[...]]
     "flip!"     => \$flip,     # --flip
     "offset=f"  => \$offset,   # --offset=<num>
-    "renum!"    => \$renum,    # --renum
     "bknum!"    => \$bknum,    # --bknum
     "edgetol=f" => \$edgetol,  # --edgetol=<num>
     "merge!"    => \$merge,    # --merge
@@ -58,6 +58,8 @@ GetOptions(
     "pid0=i"    => \$pid0,     # --pid0=<num>
     "cid0=i"    => \$cid0,     # --cid0=<num>
     "vid=i"     => \$vid,      # --vid=<num>
+    "contact!"  => \$contact,  # --contact
+    "cnrb!"     => \$cnrb,     # --cnrb
     "out=s"     => \$out,      # --out=<filename>
     "yes"       => \$yes,      # --yes
     "debug!"    => \$debug,    # --debug
@@ -105,11 +107,15 @@ if (scalar @stack == 1 and -f $stack[0])
 my %stack;
 while (@stack)
 {
+    #
     my $num = 1 + keys %stack;
+
     #
     my $this = shift @stack;
+
     #
     my ($thk,$nsub,$type) = split(/:/, $this);
+
     #
     die "Thickness invalid" if not defined $thk or
             $thk !~ m/^$RE{num}{real}$/ or $thk <= 0;
@@ -117,17 +123,19 @@ while (@stack)
             $nsub !~ m/^$RE{num}{int}$/ or $nsub <= 0;
     die "Invalid element type" if not defined $type or
             $type !~ m/^(?:shell|solid)$/i;
+
     #
     $stack{$num} = { nsub => $nsub, thk  => $thk, type => $type, };
 }
 
+#
 die "No stack defined" unless keys %stack;
-
 
 
 # Check parameter: configuration file
 my $keyfile = shift @ARGV;
 die "LS-DYNA keyfile not found: $!" unless -f $keyfile;
+
 
 # Copy STDOUT to another filehandle
 open (my $STDOLD, '>&', \*STDOUT);
@@ -140,6 +148,7 @@ if (defined $out)
 }
 
 
+#
 my $key = CAE::DYNA::Keyfile->new({ filepath => $keyfile });
 
 $key->load;
@@ -150,12 +159,7 @@ warn "## KEYFILE (loaded)\n", Dumper($key) if $debug;
 #warn "## KEYFILE (filtered)\n", Dumper($key) if $debug;
 
 
-$key->renumber() if $renum;
-warn "## KEYFILE (renumbered)\n", Dumper($key) if $debug;
-
-
-
-
+#
 my (%assocelems,%normvec,%dirvec,@edge);
 
 # Determine element normals and register associated nodes
@@ -335,6 +339,9 @@ my %stat =
     'pid_max' => max( map { $_->uid } $key->fetch({ label => 'PID' }) ),
 );
 
+$stat{pid_min} = 0 unless defined $stat{pid_min};
+$stat{pid_max} = 0 unless defined $stat{pid_max};
+
 $stat{nid_range} = $stat{nid_max} - $stat{nid_min} + 1;
 $stat{eid_range} = $stat{eid_max} - $stat{eid_min} + 1;
 $stat{pid_range} = $stat{pid_max} - $stat{pid_min} + 1;
@@ -397,31 +404,38 @@ my $nsid0_edge = $nid0 + 10**ceil(log10($nlayacc));
 my $nsid0_cnrb = $nid0 + 10**ceil(log10($nlayacc) + 1);
 
 #
-for my $nid (@edge)
+if ($cnrb)
 {
     #
-    my $cnrb =
-        CAE::DYNA::Keyword::Constrained_Nodal_Rigid_Body->new({
-            pid  => $nsid0_cnrb + $nid,
-            nsid => $nsid0_cnrb + $nid,
-        });
+    for my $nid (@edge)
+    {
+        #
+        my $cnrb =
+            CAE::DYNA::Keyword::Constrained_Nodal_Rigid_Body->new({
+                pid  => $nsid0_cnrb + $nid,
+                nsid => $nsid0_cnrb + $nid,
+            });
 
-    #
-    my $set_node =
-        CAE::DYNA::Keyword::Set_Node->new({ sid => $nsid0_cnrb + $nid });
+        #
+        my $set_node =
+            CAE::DYNA::Keyword::Set_Node->new({ sid => $nsid0_cnrb + $nid });
 
-    #
-    $newkey->add($cnrb);
-    $newkey->add($set_node);
+        #
+        $newkey->add($cnrb);
+        $newkey->add($set_node);
+    }
 }
 
 
+#
 sub convert_nid
 {
     my ($n1,$id,$nid) = @_;
     return ( $n1 + ( $id - 1 ) * $stat{nid_block} + $nid );
 }
 
+
+#
 sub convert_eid
 {
     my ($e1,$id,$eid) = @_;
@@ -511,14 +525,18 @@ for my $id (sort { $a <=> $b } keys %stack)
                     # Add node to edge nodeset
                     $set_node_edge_new->list->push($nid_new);
 
-                    # Add node to nodeset for constrained nodal rigid bodies
-                    my $set_node_cnrb = $newkey->fetch({
-                        keyword => '*SET_NODE',
-                        uid     => $nsid0_cnrb + $nid,
-                    });
-
                     #
-                    $set_node_cnrb->list->push($nid_new);
+                    if ($cnrb)
+                    {
+                        # Add node to nodeset for constrained nodal rigid bodies
+                        my $set_node_cnrb = $newkey->fetch({
+                            keyword => '*SET_NODE',
+                            uid     => $nsid0_cnrb + $nid,
+                        });
+
+                        #
+                        $set_node_cnrb->list->push($nid_new);
+                    }
                 }
 
                 # Save position vector to new node
@@ -821,17 +839,21 @@ for my $id (sort { $a <=> $b } keys %stack)
             #
             $newkey->add($set_segment);
 
-            #
-            push @contacts, [ undef, undef ] unless @contacts;
-
-            #
-            $contacts[-1][1] = $set_segment->uid;
-
-            #
-            if ($lref->{type} !~ /^solid$/i)
+            # In case contact definitions are enabled
+            if ($contact)
             {
                 #
-                push @contacts, [ $set_segment->uid, undef ];
+                push @contacts, [ undef, undef ] unless @contacts;
+
+                #
+                $contacts[-1][1] = $set_segment->uid;
+
+                #
+                if ($lref->{type} !~ /^solid$/i)
+                {
+                    #
+                    push @contacts, [ $set_segment->uid, undef ];
+                }
             }
         }
 
@@ -841,9 +863,12 @@ for my $id (sort { $a <=> $b } keys %stack)
             #
             $newkey->add($set_segment_solid_top);
 
-            #
-            push @contacts, [ $set_segment_solid_top->uid, undef ];
-
+            # In case contact definitions are enabled
+            if ($contact)
+            {
+                #
+                push @contacts, [ $set_segment_solid_top->uid, undef ];
+            }
         }
     }
 
@@ -852,25 +877,30 @@ for my $id (sort { $a <=> $b } keys %stack)
 
 }
 
-# Remove all contacts except interior ones
-shift @contacts;
-pop @contacts;
-
-# Instantiate contact definitions and add to new keyfile
-for my $cid (0 .. $#contacts)
+# In case contact definitions are enabled
+if ($contact)
 {
-    #
-    my $contact =
-        CAE::DYNA::Keyword::Contact_Automatic_Surface_To_Surface->new({
-            cid   => $cid0 + $cid + 1,
-            ssid  => $contacts[$cid][0],
-            msid  => $contacts[$cid][1],
-            sstyp => 0,
-            mstyp => 0,
-        });
-    #
-    $newkey->add($contact);
-};
+    # Remove all contact definitions except interior ones
+    shift @contacts;
+    pop @contacts;
+
+    # Loop over remaining contact definitions
+    for my $cid (0 .. $#contacts)
+    {
+        # Create new contact object
+        my $contact =
+            CAE::DYNA::Keyword::Contact_Automatic_Surface_To_Surface->new({
+                cid   => $cid0 + $cid + 1,
+                ssid  => $contacts[$cid][0],
+                msid  => $contacts[$cid][1],
+                sstyp => 0,
+                mstyp => 0,
+            });
+
+        # Add contact to new keyfile
+        $newkey->add($contact);
+    };
+}
 
 # Print new keyfile
 print $newkey;
@@ -907,10 +937,6 @@ Flips the normal vector of all elements of the source layer.  Care should be tak
 
 [enter text here]
 
-=item B<--renum>
-
-Enables renumbering (not implemented yet).
-
 =item B<--bknum>
 
 Enables block numbering.
@@ -945,7 +971,13 @@ Drags shell elements along LS-DYNA keyfile vector.  Specify ID of vector
 that is defined in keyfile.  If no ID is given, each master shell element
 is dragged along its individual element normal.
 
-=item B<--pid>=I<id>
+=item B<--contact>
+
+Enables contact definitions between layers using *CONTACT keyword.
+
+=item B<--cnrb>
+
+Enables stitching of layer edges using *CONSTRAINED keyword.
 
 =item B<--out>=I<filename>
 
