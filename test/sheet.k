@@ -2,6 +2,33 @@
 $
 $-------------------------------------------------------------------------------
 $
+*PART
+$# title
+Part
+$#     pid     secid       mid     eosid      hgid      grav    adpopt      tmid
+         1         1         1
+$
+$-------------------------------------------------------------------------------
+$
+*MAT_ELASTIC_TITLE
+$# title
+Material
+$#     mid        ro         e        pr        da        db         k
+         1   1.0E-06     1.000     0.300
+$
+$-------------------------------------------------------------------------------
+$
+*SECTION_SHELL_TITLE
+$# title
+Section
+$#   secid    elform      shrf       nip     propt   qr/irid     icomp     setyp
+         1         1     0.833         2
+$#      t1        t2        t3        t4      nloc     marea      idof    edgset
+     1.000
+$
+$
+$-------------------------------------------------------------------------------
+$
 *ELEMENT_SHELL
 $#   eid     pid      n1      n2      n3      n4      n5      n6      n7      n8
        1       1      44      45       4       3       0       0       0       0

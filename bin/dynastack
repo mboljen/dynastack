@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 #
 # Created:         Mo 2019-08-26 11:15:34 CEST
-# Last Modified:   Tue 2021-10-19 15:43:46 CEST
+# Last Modified:   Wed 2021-10-20 12:55:46 CEST
 #
 # dynastack:
 #   Drag LS-DYNA shell layer to multi-layered pack of stacked parts
@@ -41,6 +41,7 @@ my $invnum  = 0;
 my $nid0    = 0;
 my $eid0    = 0;
 my $pid0    = 0;
+my $cid0    = 0;
 my $vid     = 0;
 
 GetOptions(
@@ -55,6 +56,7 @@ GetOptions(
     "nid0=i"    => \$nid0,     # --nid0=<num>
     "eid0=i"    => \$eid0,     # --eid0=<num>
     "pid0=i"    => \$pid0,     # --pid0=<num>
+    "cid0=i"    => \$cid0,     # --cid0=<num>
     "vid=i"     => \$vid,      # --vid=<num>
     "out=s"     => \$out,      # --out=<filename>
     "yes"       => \$yes,      # --yes
@@ -159,7 +161,7 @@ my (%assocelems,%normvec,%dirvec,@edge);
 # Determine element normals and register associated nodes
 for my $elem ($key->fetch({ keyword => '*ELEMENT_SHELL' }))
 {
-    # Get node ovjects
+    # Get node objects
     my $n1 = $key->fetch({ label => 'NID', uid => $elem->n1 });
     my $n2 = $key->fetch({ label => 'NID', uid => $elem->n2 });
     my $n3 = $key->fetch({ label => 'NID', uid => $elem->n3 });
@@ -186,13 +188,13 @@ for my $elem ($key->fetch({ keyword => '*ELEMENT_SHELL' }))
     }
 }
 
+#
 warn "## ASSOCELEMS\n", Dumper(\%assocelems) if $debug;
 
+#
 warn "## NORMVEC\n", Dumper(\%normvec) if $debug;
 
-
 # Determine nodal translation vectors from associated elements
-#for my $nid (sort { $a <=> $b } keys %{$key->{node}})
 for my $node ($key->fetch({ label => 'NID' }))
 {
     #
@@ -218,13 +220,13 @@ for my $node ($key->fetch({ label => 'NID' }))
     $dirvec{$nid} *= -1 if $flip;
 }
 
+#
 warn "## DIRVEC\n", Dumper(\%dirvec) if $debug;
 
 #
 for my $node ($key->fetch({ label => 'NID' }))
-#for my $nid (sort { $a <=> $b } keys %{$key->{node}})
 {
-
+    #
     my $nid = $node->uid;
 
     # Define plane by normal vector and node
@@ -329,25 +331,32 @@ my %stat =
     'nid_max' => max( map { $_->uid } $key->fetch({ label => 'NID' }) ),
     'eid_min' => min( map { $_->uid } $key->fetch({ label => 'EID' }) ),
     'eid_max' => max( map { $_->uid } $key->fetch({ label => 'EID' }) ),
+    'pid_min' => min( map { $_->uid } $key->fetch({ label => 'PID' }) ),
+    'pid_max' => max( map { $_->uid } $key->fetch({ label => 'PID' }) ),
 );
 
 $stat{nid_range} = $stat{nid_max} - $stat{nid_min} + 1;
 $stat{eid_range} = $stat{eid_max} - $stat{eid_min} + 1;
+$stat{pid_range} = $stat{pid_max} - $stat{pid_min} + 1;
 
 if ($bknum)
 {
     $stat{nid_block} = 10**ceil(log10($stat{nid_range}));
     $stat{eid_block} = 10**ceil(log10($stat{eid_range}));
+    $stat{pid_block} = 10**ceil(log10($stat{pid_range}));
 }
 else
 {
     $stat{nid_block} = $stat{nid_range};
     $stat{eid_block} = $stat{eid_range};
+    $stat{pid_block} = $stat{pid_range};
 }
 
+#
 $stat{thk_total} = 0;    # Total thickness
 $stat{nlay_max}  = 0;    # Number of nodal sublayers in layer
 
+#
 for my $id (sort { $a <=> $b } keys %stack)
 {
     #
@@ -357,9 +366,7 @@ for my $id (sort { $a <=> $b } keys %stack)
     $stat{thk_total} += $stack{$id}{thk};
 }
 
-$stat{pid_block} = 10**ceil(log10($stat{nlay_max}));
-
-
+#
 warn "## STAT\n", Dumper(\%stat) if $debug;
 
 
@@ -369,17 +376,45 @@ my @lkeys = sort { $a <=> $b } keys %stack;
 my $nlayacc = 0;
 for my $id (@lkeys)
 {
-    $stack{$id}{id} = 1 + $pid0 + $stat{pid_block} * $nlayacc;
-    $stack{$id}{n1} =     $nid0 + $stat{nid_block} * $nlayacc;
-    $stack{$id}{e1} =     $eid0 + $stat{eid_block} * $nlayacc;
+    $stack{$id}{p1} = $pid0 + $stat{pid_block} * $nlayacc;
+    $stack{$id}{n1} = $nid0 + $stat{nid_block} * $nlayacc;
+    $stack{$id}{e1} = $eid0 + $stat{eid_block} * $nlayacc;
     $nlayacc += $stack{$id}{nsub};
     $nlayacc += 1 if $stack{$id}{type} =~ m/^solid$/i;
 }
 
-
+#
+warn "## STACK\n", Dumper(\%stack) if $debug;
 
 # Output data
 my $newkey = CAE::DYNA::Keyfile->new();
+
+
+# Node set ID offset for edge node sets
+my $nsid0_edge = $nid0 + 10**ceil(log10($nlayacc));
+
+# Node set ID offset for constrained nodal rigid bodies
+my $nsid0_cnrb = $nid0 + 10**ceil(log10($nlayacc) + 1);
+
+#
+for my $nid (@edge)
+{
+    #
+    my $cnrb =
+        CAE::DYNA::Keyword::Constrained_Nodal_Rigid_Body->new({
+            pid  => $nsid0_cnrb + $nid,
+            nsid => $nsid0_cnrb + $nid,
+        });
+
+    #
+    my $set_node =
+        CAE::DYNA::Keyword::Set_Node->new({ sid => $nsid0_cnrb + $nid });
+
+    #
+    $newkey->add($cnrb);
+    $newkey->add($set_node);
+}
+
 
 sub convert_nid
 {
@@ -394,7 +429,12 @@ sub convert_eid
 }
 
 
+#
 my $thkoff = $offset;
+
+
+# Container for internal contacts (holds master and slave segment IDs)
+my @contacts;
 
 
 # Loop over layers in stack
@@ -404,12 +444,13 @@ for my $id (sort { $a <=> $b } keys %stack)
     my $lref = $stack{$id};
 
     #
-    my $pid_new = $stack{$id}{id};
+    my $pid_new = $stack{$id}{p1};
 
     #
-    my $set_node_edge_new = CAE::DYNA::Keyword::Set_Node->new({
-            sid => $pid_new,
-    });
+    my $set_node_edge_new =
+        CAE::DYNA::Keyword::Set_Node->new({
+            sid => $nsid0_edge + $pid_new,
+        });
 
     # Create nodal distribution
     for my $subid (1 .. $lref->{nsub})
@@ -446,14 +487,14 @@ for my $id (sort { $a <=> $b } keys %stack)
             }
 
             #
-            #foreach my $node (sort { $a <=> $b } keys %{$key->{node}})
             foreach my $node ($key->fetch({ label => 'NID' }))
             {
-                my $nid = $node->uid;
                 #
-                #my $posvec = $key->nodevec($nid); #{nodes}{$nid}{coordvec};
+                my $nid = $node->uid;
+
+                #
                 my $posvec = $node->vector;
-                my $dirvec = $dirvec{$nid}; # key->{nodes}{$nid}{dirvec};
+                my $dirvec = $dirvec{$nid};
 
                 #
                 my $nodevec = $posvec + $dist_node * $dirvec;
@@ -462,20 +503,32 @@ for my $id (sort { $a <=> $b } keys %stack)
                 my $nlayid = $subid + $i;
 
                 # Determine destination node ID
-                my $nid_new = $lref->{n1}
-                            + ($nlayid-1) * $stat{nid_block} + $nid;
+                my $nid_new = convert_nid($lref->{n1}, $nlayid, $nid);
 
-                # Add new node to nodeset 'edge'
-                $set_node_edge_new->list->push($nid_new)
-                    if grep $_ == $nid, @edge;
+                # Check if we have a edge node
+                if (grep $_ == $nid, @edge)
+                {
+                    # Add node to edge nodeset
+                    $set_node_edge_new->list->push($nid_new);
+
+                    # Add node to nodeset for constrained nodal rigid bodies
+                    my $set_node_cnrb = $newkey->fetch({
+                        keyword => '*SET_NODE',
+                        uid     => $nsid0_cnrb + $nid,
+                    });
+
+                    #
+                    $set_node_cnrb->list->push($nid_new);
+                }
 
                 # Save position vector to new node
-                my $node_new = CAE::DYNA::Keyword::Node->new({
+                my $node_new =
+                    CAE::DYNA::Keyword::Node->new({
                         nid => $nid_new,
                         x   => $nodevec->[0],
                         y   => $nodevec->[1],
                         z   => $nodevec->[2],
-                });
+                    });
 
                 # Add new node to input deck
                 $newkey->add($node_new);
@@ -484,61 +537,67 @@ for my $id (sort { $a <=> $b } keys %stack)
     }
 
     # add node set (only if edge nodes detected)
-    $newkey->add($set_node_edge_new);
+    $newkey->add($set_node_edge_new)
+        if $set_node_edge_new->list->count;
 
     # create elements
-    for my $subid (1 .. $lref->{nsub}) {
-
-        # create empty segment set
-        my $set_segment = CAE::DYNA::Keyword::Set_Segment->new({
-            sid => $pid_new + $subid,
-        });
-
-        #my %set_segment = ( sid => $pid_new + $subid, item => [] );
-
-        my $set_segment_solid_top = CAE::DYNA::Keyword::Set_Segment->new({
-            sid => $pid_new + $subid + 1,
-        }) if $subid == $lref->{nsub} and $lref->{type} =~ /^solid$/i;
+    for my $subid (1 .. $lref->{nsub})
+    {
+        # Create empty segment set
+        my $set_segment =
+            CAE::DYNA::Keyword::Set_Segment->new({
+                sid => $pid_new + $subid,
+            });
 
         #
-        # my %set_segment_solid_top = (
-        #   sid => $pid_new + $subid + 1, item => [] )
-        #    if $subid == $lref->{nsub} and $lref->{type} =~ /^solid$/i;
+        my $set_segment_solid_top =
+            CAE::DYNA::Keyword::Set_Segment->new({
+                sid => $pid_new + $subid + 1,
+            })
+            if $subid == $lref->{nsub} and $lref->{type} =~ /^solid$/i;
 
         # Create elements
         foreach my $elem ($key->fetch({ label => 'EID' }))
         {
+            #
             my $eid = $elem->uid;
+
             #
             my $eid_new = convert_eid($lref->{e1}, $subid, $eid);
+
             #
             my $n1 = $elem->n1;
             my $n2 = $elem->n2;
             my $n3 = $elem->n3;
+
             #
             my $n1_new = convert_nid($lref->{n1}, $subid, $n1);
             my $n2_new = convert_nid($lref->{n1}, $subid, $n2);
             my $n3_new = convert_nid($lref->{n1}, $subid, $n3);
+
             #
             if ($elem->type eq 'tria3')
             {
                 #
                 if ($lref->{type} =~ m/^shell$/i)
                 {
-                    # create tria3 element
+                    # Create tria3 element
                     my $elem_new = CAE::DYNA::Keyword::Element_Shell->new({
                         eid => $eid_new,
-                        pid => $pid_new,
+                        pid => $pid_new + 1,
                         n1  => 0,
                         n2  => 0,
                         n3  => 0,
                     });
+
                     #
                     $elem_new->n1($n1_new);
                     $elem_new->n2($n2_new);
                     $elem_new->n3($n3_new);
+
                     #
                     $newkey->add($elem_new);
+
                     #
                     $set_segment->list->push(
                        CAE::DYNA::Keyword::Set_Segment::Item->new({
@@ -551,10 +610,11 @@ for my $id (sort { $a <=> $b } keys %stack)
                 }
                 elsif ($lref->{type} =~ m/^solid$/i)
                 {
+
                     # create hex6 element
                     my $elem_new = CAE::DYNA::Keyword::Element_Solid->new({
                         eid => $eid_new,
-                        pid => $pid_new,
+                        pid => $pid_new + 1,
                         n1  => 0,
                         n2  => 0,
                         n3  => 0,
@@ -564,10 +624,12 @@ for my $id (sort { $a <=> $b } keys %stack)
                         n7  => 0,
                         n8  => 0,
                     });
+
                     #
                     my $n4_new = convert_nid($lref->{n1}, $subid + 1, $n1);
                     my $n5_new = convert_nid($lref->{n1}, $subid + 1, $n2);
                     my $n6_new = convert_nid($lref->{n1}, $subid + 1, $n3);
+
                     #
                     if ($invnum)
                     {
@@ -593,8 +655,10 @@ for my $id (sort { $a <=> $b } keys %stack)
                         $elem_new->n7($n6_new);
                         $elem_new->n8($n6_new);
                     }
+
                     #
                     $newkey->add($elem_new);
+
                     #
                     $set_segment->segments->push({
                             n1 => $n1_new,
@@ -602,6 +666,7 @@ for my $id (sort { $a <=> $b } keys %stack)
                             n3 => $n3_new,
                             n4 => $n3_new,
                     });
+
                     #
                     $set_segment->list->push(
                        CAE::DYNA::Keyword::Set_Segment::Item->new({
@@ -611,6 +676,7 @@ for my $id (sort { $a <=> $b } keys %stack)
                             n4 => $n3_new,
                         })
                     );
+
                     #
                     if ($subid == $lref->{nsub})
                     {
@@ -625,30 +691,36 @@ for my $id (sort { $a <=> $b } keys %stack)
                     }
                 }
             }
-            elsif ($elem->type eq 'quad4') {
+            elsif ($elem->type eq 'quad4')
+            {
                 #
                 my $n4 = $elem->n4;
+
                 #
                 my $n4_new = convert_nid($lref->{n1}, $subid, $n4);
+
                 #
                 if ($lref->{type} =~ m/^shell$/i)
                 {
-                    # create quad4 element
+                    # Create quad4 element
                     my $elem_new = CAE::DYNA::Keyword::Element_Shell->new({
                         eid => $eid_new,
-                        pid => $pid_new,
+                        pid => $pid_new + 1,
                         n1  => 0,
                         n2  => 0,
                         n3  => 0,
                         n4  => 0,
                     });
+
                     #
                     $elem_new->n1($n1_new);
                     $elem_new->n2($n2_new);
                     $elem_new->n3($n3_new);
                     $elem_new->n4($n4_new);
+
                     #
                     $newkey->add($elem_new);
+
                     #
                     $set_segment->list->push(
                         CAE::DYNA::Keyword::Set_Segment::Item->new({
@@ -661,10 +733,10 @@ for my $id (sort { $a <=> $b } keys %stack)
                 }
                 elsif ($lref->{type} =~ m/^solid$/i)
                 {
-                    # create hex8 element
+                    # Create hex8 element
                     my $elem_new = CAE::DYNA::Keyword::Element_Solid->new({
                         eid => $eid_new,
-                        pid => $pid_new,
+                        pid => $pid_new + 1,
                         n1  => 0,
                         n2  => 0,
                         n3  => 0,
@@ -674,12 +746,14 @@ for my $id (sort { $a <=> $b } keys %stack)
                         n7  => 0,
                         n8  => 0,
                     });
+
                     #
                     my $n5_new = convert_nid($lref->{n1}, $subid + 1, $n1);
                     my $n6_new = convert_nid($lref->{n1}, $subid + 1, $n2);
                     my $n7_new = convert_nid($lref->{n1}, $subid + 1, $n3);
                     my $n8_new = convert_nid($lref->{n1}, $subid + 1, $n4);
-                     #
+
+                    #
                     if ($invnum)
                     {
                         #
@@ -692,7 +766,8 @@ for my $id (sort { $a <=> $b } keys %stack)
                         $elem_new->n7($n3_new);
                         $elem_new->n8($n4_new);
                     }
-                    else {
+                    else
+                    {
                         #
                         $elem_new->n1($n1_new);
                         $elem_new->n2($n2_new);
@@ -703,8 +778,10 @@ for my $id (sort { $a <=> $b } keys %stack)
                         $elem_new->n7($n7_new);
                         $elem_new->n8($n8_new);
                     }
+
                     #
                     $newkey->add($elem_new);
+
                     #
                     $set_segment->list->push(
                         CAE::DYNA::Keyword::Set_Segment::Item->new({
@@ -714,6 +791,7 @@ for my $id (sort { $a <=> $b } keys %stack)
                             n4 => $n4_new,
                         })
                     );
+
                     #
                     if ($subid == $lref->{nsub})
                     {
@@ -738,12 +816,35 @@ for my $id (sort { $a <=> $b } keys %stack)
         }
 
         # Add first segment layer for solids (or any layer for shells)
-        $newkey->add($set_segment)
-            if $lref->{type} =~ /^shell$/i or $subid == 1;
+        if ($lref->{type} =~ /^shell$/i or $subid == 1)
+        {
+            #
+            $newkey->add($set_segment);
+
+            #
+            push @contacts, [ undef, undef ] unless @contacts;
+
+            #
+            $contacts[-1][1] = $set_segment->uid;
+
+            #
+            if ($lref->{type} !~ /^solid$/i)
+            {
+                #
+                push @contacts, [ $set_segment->uid, undef ];
+            }
+        }
 
         # Add last segment layer for solids
-        $newkey->add($set_segment_solid_top)
-            if $lref->{type} =~ /^solid$/i and $subid == $lref->{nsub};
+        if ($lref->{type} =~ /^solid$/i and $subid == $lref->{nsub})
+        {
+            #
+            $newkey->add($set_segment_solid_top);
+
+            #
+            push @contacts, [ $set_segment_solid_top->uid, undef ];
+
+        }
     }
 
     #
@@ -751,12 +852,32 @@ for my $id (sort { $a <=> $b } keys %stack)
 
 }
 
+# Remove all contacts except interior ones
+shift @contacts;
+pop @contacts;
 
+# Instantiate contact definitions and add to new keyfile
+for my $cid (0 .. $#contacts)
+{
+    #
+    my $contact =
+        CAE::DYNA::Keyword::Contact_Automatic_Surface_To_Surface->new({
+            cid   => $cid0 + $cid + 1,
+            ssid  => $contacts[$cid][0],
+            msid  => $contacts[$cid][1],
+            sstyp => 0,
+            mstyp => 0,
+        });
+    #
+    $newkey->add($contact);
+};
+
+# Print new keyfile
 print $newkey;
 
-
-# restore STDOUT
+# Restore STDOUT
 open (STDOUT, '>&', $STDOLD) or die "Cannot restore STDOUT";
+
 
 __END__
 
